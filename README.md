@@ -57,10 +57,16 @@ standard output and what it found to standard error. Name either or
 both. Each learns every address it is asked about, so name your own:
 there is no default.
 
-The Electrum connection is TLS, and the server's certificate is verified
-against the system's CA certificates, or against those of the file
-`--cafile` names, which is how a server with a self-signed certificate
-is reached.
+The Electrum connection is TLS, one connection for the whole scan, and
+the server's certificate is verified against the system's CA
+certificates, or against those of the file `--cafile` names, which is
+how a server with a self-signed certificate is reached.
+
+`--tcp` asks a server on your own machine over plain TCP instead. Its
+host must resolve to loopback addresses alone, `127.0.0.0/8` or `::1`,
+and any other is refused. The connection is not encrypted or
+authenticated: SECURITY.md's *Limitations, not vulnerabilities* says
+what that exposes.
 
 The node is an execution client's JSON-RPC, at an `https` URL, or an
 `http` one on a loopback address such as `http://127.0.0.1:8545`.
@@ -90,14 +96,14 @@ error. Bitcoin Cash is the chain it reads. An output that also carries
 CashTokens is not read as paying its script: its satoshis are not
 counted, and an account paid only through such outputs reads as unused.
 
-The server is the user's own, and its certificate is verified as
-*Scanning a bundle* says. Before any address is asked, its blocks at
-the chain's checkpoints are compared with the chain's, so that a server
-of another chain, as one of Bitcoin's, is refused. That shows which
-chain the server says it serves, not that the histories it answers are
-that chain's: the server is trusted for what it answers, as SECURITY.md's
-*Limitations, not vulnerabilities* says, and proving each history
-against the chain is
+The server is the user's own, reached as *Scanning a bundle* says, over
+TLS or, with `--tcp`, over loopback. Before any address is asked, its
+blocks at the chain's checkpoints are compared with the chain's, so that
+a server of another chain, as one of Bitcoin's, is refused. That shows
+which chain the server says it serves, not that the histories it answers
+are that chain's: the server is trusted for what it answers, as
+SECURITY.md's *Limitations, not vulnerabilities* says, and proving each
+history against the chain is
 [btclib-org/seed-scan#34](https://github.com/btclib-org/seed-scan/issues/34).
 
 `seed_scan.forks` documents the result and which accounts are read, and
