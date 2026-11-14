@@ -5,10 +5,10 @@
 """Tests for ``seed-scan forks``: the chain check, the result, the refusals.
 
 The Electrum server is `tests.scan_cli_test.Electrum`, which answers the
-genesis block at every height, and `Forked`, which answers Bitcoin
-Cash's blocks at its checkpoints. Those are real headers, so that the
-proof of work the fetcher checks holds: the first test checks that each
-hashes to the id `seed_scan.forks.BITCOIN_CASH` names.
+genesis block at every height, and `Forked`, which answers a chain's
+blocks at its checkpoints, Bitcoin Cash's unless told otherwise. Those
+are real headers, so that the proof of work the fetcher checks holds:
+the first test checks that each hashes to the id its chain names.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from typing_extensions import override
 
 from seed_scan import cli
 from seed_scan.bundle import dumps
-from seed_scan.forks import BITCOIN_CASH
+from seed_scan.forks import BITCOIN_CASH, ECASH
 from seed_scan.identify import identify
 
 from .identify_test import ABANDON, SEGWIT, STANDARD, legacy_address, no_share
@@ -35,6 +35,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from btclib.tx import Tx
+
+    from seed_scan.forks import Chain
 
 #: Bitcoin Cash's header at each height of its checkpoints, as a Fulcrum
 #: server of that chain answered `blockchain.block.header`.
@@ -50,6 +52,33 @@ HEADERS = {
         "6afc2602180d6502c6"
     ),
 }
+
+#: eCash's header at each height of its checkpoints, as the servers of
+#: Electrum ABC's list that present a certificate the system trusts
+#: answered `blockchain.block.header`. The fork block is Bitcoin Cash's:
+#: https://github.com/Bitcoin-ABC/bitcoin-abc/blob/988b903deb04311b12ba067734dab3ff9f5411a7/electrum/electrumabc/servers.json
+XEC_HEADERS = {
+    478559: HEADERS[478559],
+    661648: (
+        "000000202fe6ee2db04b6575ad185521133598e3590d787a4bed83000000000000000000"
+        "feb46e1b333b7a04b2dd022a178e3f8a4194d54f648fc0ed455100690dadcf4f5c4fb15f"
+        "d0e004182f09f2c3"
+    ),
+    949200: (
+        "00e0e5273477b6c5c31b3d03c3a8cfb7d64a849b4a6b254c6a37046300000000000000"
+        "004e0cb069a8711e4d680ac7c2afbc4ab58d27c9514bc497452d9cee9fe2bfa022ee1a07"
+        "6a219f0019486e7c73"
+    ),
+}
+
+#: Bitcoin Cash's header at 661648, where eCash's first block of its own
+#: is, as Fulcrum servers of Electron Cash's list answered it: the id
+#: Bitcoin Cash Node's checkpoint names there.
+BCH_661648 = (
+    "000000202fe6ee2db04b6575ad185521133598e3590d787a4bed83000000000000000000"
+    "42faaa7bb98abdfb6f780417b1c0eb7873cd49e048feef273d5e270e1eb223855938b15f"
+    "d0e0041888420330"
+)
 
 
 class Forked(Electrum):
@@ -104,26 +133,48 @@ def bundle(tmp_path: Path) -> str:
 
 
 def run(
-    capsys: pytest.CaptureFixture[str], argv: list[str], connect: Connections
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+    connect: Connections,
+    chain: str = "bitcoin-cash",
 ) -> tuple[int, str, str]:
-    """Run ``seed-scan forks`` on Bitcoin Cash; answer its status and output.
+    """Run ``seed-scan forks`` on a chain; answer its status and output.
 
     :param capsys: pytest's capture of the standard streams.
     :param argv: the bundle and the arguments after it.
     :param connect: what makes the connection.
+    :param chain: the chain named, Bitcoin Cash unless given.
     :returns: the exit status, standard output and standard error.
     """
-    status = cli.main(["forks", "--chain", "bitcoin-cash", *argv], connect=connect)
+    status = cli.main(["forks", "--chain", chain, *argv], connect=connect)
     out, err = capsys.readouterr()
     return status, out, err
 
 
-def test_the_headers_are_bitcoin_cash_s_checkpoints() -> None:
-    """Each header hashes to the block id the chain's checkpoint names."""
-    assert dict(BITCOIN_CASH.checkpoints) == {
+@pytest.mark.parametrize(
+    "chain, headers", [(BITCOIN_CASH, HEADERS), (ECASH, XEC_HEADERS)]
+)
+def test_the_headers_are_the_chain_s_checkpoints(
+    chain: Chain, headers: dict[int, str]
+) -> None:
+    """Each header hashes to the block id the chain's checkpoint names.
+
+    :param chain: the chain.
+    :param headers: its header at each checkpoint, as hex.
+    """
+    assert dict(chain.checkpoints) == {
         height: BlockHeader.parse(bytes.fromhex(header)).hash.hex()
-        for height, header in HEADERS.items()
+        for height, header in headers.items()
     }
+
+
+def test_bitcoin_cash_s_block_at_ecash_s_split_is_bitcoin_cash_node_s() -> None:
+    """The header hashes to the id Bitcoin Cash Node's checkpoint names."""
+    header = BlockHeader.parse(bytes.fromhex(BCH_661648))
+    assert header.hash.hex() == (
+        "0000000000000000029e471c41818d24b8b74c911071c4ef0b4a0509f9b5a8ce"
+    )
+    assert header.hash.hex() != dict(ECASH.checkpoints)[661648]
 
 
 def test_forks_writes_the_result_and_a_summary(
@@ -145,7 +196,7 @@ def test_forks_writes_the_result_and_a_summary(
     assert (used["confirmed"], used["unconfirmed"], used["at_fork"]) == (0, 2_500, 0)
     assert err.startswith(
         "server: node.local:50002\n"
-        "chain: Bitcoin Cash, its own blocks from height 478559\n"
+        "chain: Bitcoin Cash, forked from Bitcoin at height 478559\n"
         "bounds: account gap 3, gap limit 20\n"
         "reading 0, bitcoin purpose 44: accounts read: 1, cut short:"
     )
@@ -176,6 +227,55 @@ def test_a_server_of_another_chain_is_asked_for_no_address(
     status, out, err = run(capsys, [bundle, "--server", "h:1"], Connections(server))
     assert (status, out) == (1, "")
     assert err == "seed-scan forks: the server does not serve Bitcoin Cash\n"
+    assert set(server.asked) == {"blockchain.block.header"}
+
+
+def test_ecash_is_read_on_a_server_serving_its_checkpoints(
+    capsys: pytest.CaptureFixture[str], bundle: str
+) -> None:
+    """A payment at eCash's coin type, found once the chain is checked."""
+    script = ScriptPubKey.from_address(legacy_address("m/44h/899h/0h/0/0"))
+    server = Forked(pay(script, 1_500), headers=XEC_HEADERS)
+    argv = [bundle, "--server", "h:1"]
+    status, out, err = run(capsys, argv, Connections(server), "ecash")
+    assert status == 0
+    document = json.loads(out)
+    assert document["chain"] == "ecash"
+    (used,) = document["used"]
+    assert (used["coin"], used["path"]) == ("ecash", "m/44h/899h/0h")
+    assert "\nchain: eCash, forked from Bitcoin at height 478559\n" in err
+    assert "\nreading 0, bitcoin-cash purpose 44: accounts read: 1, cut short:" in err
+    assert "\nreading 0, ecash purpose 44: accounts read: 1, cut short:" in err
+    assert server.asked[:4] == ["blockchain.block.header"] * 4
+
+
+@pytest.mark.parametrize(
+    "chain, headers, title",
+    [
+        ("ecash", {**HEADERS, 661648: BCH_661648}, "eCash"),
+        ("bitcoin-cash", XEC_HEADERS, "Bitcoin Cash"),
+    ],
+)
+def test_a_server_of_the_other_fork_is_refused(
+    capsys: pytest.CaptureFixture[str],
+    bundle: str,
+    chain: str,
+    headers: dict[int, str],
+    title: str,
+) -> None:
+    """Both share the fork block, and differ at a later checkpoint.
+
+    :param capsys: pytest's capture of the standard streams.
+    :param bundle: the bundle's file.
+    :param chain: the chain named.
+    :param headers: the other chain's blocks, which the server answers.
+    :param title: how the refusal names the chain named.
+    """
+    server = Forked(headers=headers)
+    argv = [bundle, "--server", "h:1"]
+    status, out, err = run(capsys, argv, Connections(server), chain)
+    assert (status, out) == (1, "")
+    assert err == f"seed-scan forks: the server does not serve {title}\n"
     assert set(server.asked) == {"blockchain.block.header"}
 
 
